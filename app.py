@@ -26,6 +26,7 @@ DEFAULT_DATA_PATH = Path("DATASALESBOGOR.csv")
 
 FEATURES = ["DayNum", "Month", "DOW", "Week", "Lag1", "Lag7", "MA7"]
 COLORS = ["#2563EB", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899"]
+CLUSTER_CMAP = "RdBu"
 
 
 st.set_page_config(
@@ -355,14 +356,54 @@ def build_excel(future_df: pd.DataFrame, store_stats: pd.DataFrame, metrics: pd.
     return buffer.getvalue()
 
 
+def plot_cluster_scatter(store_stats: pd.DataFrame, best_k: int, explained) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(12, 5.5))
+    size_base = store_stats["TotalValue"].clip(lower=0)
+    max_size = max(size_base.max(), 1)
+    sizes = 40 + (size_base / max_size) * 320
+
+    scatter = ax.scatter(
+        store_stats["PC1"],
+        store_stats["PC2"],
+        c=store_stats["Cluster"],
+        cmap=CLUSTER_CMAP,
+        s=sizes,
+        alpha=0.85,
+        edgecolors="white",
+        linewidth=0.6,
+    )
+
+    for cluster_id in sorted(store_stats["Cluster"].unique()):
+        sub = store_stats[store_stats["Cluster"] == cluster_id]
+        ax.annotate(
+            f"Klaster {int(cluster_id)}",
+            (sub["PC1"].mean(), sub["PC2"].mean()),
+            ha="center",
+            fontsize=10,
+            fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85),
+        )
+
+    ticks = sorted(store_stats["Cluster"].unique())
+    cbar = fig.colorbar(scatter, ax=ax, ticks=ticks)
+    cbar.set_label("Cluster")
+
+    ax.set_title(f"Clustering Toko (Red to Blue), k={best_k}", fontweight="bold")
+    ax.set_xlabel(f"PC1 ({explained[0] * 100:.1f}%)")
+    ax.set_ylabel(f"PC2 ({explained[1] * 100:.1f}%)")
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    return fig
+
+
 def format_rupiah_compact(value: float) -> str:
     abs_value = abs(value)
     if abs_value >= 1_000_000_000_000:
-        return f"Rp {value / 1_000_000_000_000:.2f} triliun"
+        return f"Rp {value / 1_000_000_000_000:.2f} T"
     if abs_value >= 1_000_000_000:
-        return f"Rp {value / 1_000_000_000:.2f} miliar"
+        return f"Rp {value / 1_000_000_000:.2f} M"
     if abs_value >= 1_000_000:
-        return f"Rp {value / 1_000_000:.2f} juta"
+        return f"Rp {value / 1_000_000:.2f} Juta"
     if abs_value >= 1_000:
         return f"Rp {value / 1_000:.2f} ribu"
     return f"Rp {value:,.0f}"
@@ -505,8 +546,7 @@ with tab3:
     st.dataframe(cluster_profile, use_container_width=True)
 
     if best_k > 1:
-        scatter_df = store_stats[["PC1", "PC2", "Cluster", "Nama Store", "TotalValue"]]
-        st.scatter_chart(scatter_df, x="PC1", y="PC2", color="Cluster", size="TotalValue")
+        st.pyplot(plot_cluster_scatter(store_stats, best_k, explained))
 
     if sil_scores:
         st.subheader("Silhouette Score")
