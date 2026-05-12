@@ -22,9 +22,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 
-DEFAULT_DATA_PATH = Path(
-    "/Users/muhghifari/Documents/KULIAH/JOKI TEMEN/nazra (pa boldson)/DATASALESBOGOR.csv"
-)
+DEFAULT_DATA_PATH = Path("https://raw.githubusercontent.com/MuhGhifari/Prediksi-Penjualan/refs/heads/main/DATASALESBOGOR.csv")
 
 FEATURES = ["DayNum", "Month", "DOW", "Week", "Lag1", "Lag7", "MA7"]
 COLORS = ["#2563EB", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899"]
