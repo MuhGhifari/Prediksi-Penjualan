@@ -355,6 +355,19 @@ def build_excel(future_df: pd.DataFrame, store_stats: pd.DataFrame, metrics: pd.
     return buffer.getvalue()
 
 
+def format_rupiah_compact(value: float) -> str:
+    abs_value = abs(value)
+    if abs_value >= 1_000_000_000_000:
+        return f"Rp {value / 1_000_000_000_000:.2f} triliun"
+    if abs_value >= 1_000_000_000:
+        return f"Rp {value / 1_000_000_000:.2f} miliar"
+    if abs_value >= 1_000_000:
+        return f"Rp {value / 1_000_000:.2f} juta"
+    if abs_value >= 1_000:
+        return f"Rp {value / 1_000:.2f} ribu"
+    return f"Rp {value:,.0f}"
+
+
 st.title("Prediksi Penjualan dan Clustering Toko")
 st.caption("Streamlit app berdasarkan notebook `sales_prediction_bogor (testing).ipynb`.")
 
@@ -426,13 +439,15 @@ metrics = (
 st.subheader("Ringkasan Data")
 st.write(f"Sumber data: `{source_name}`")
 cols = st.columns(5)
+total_value = df_filtered["Value"].sum()
 cols[0].metric("Baris bersih", f"{len(df_filtered):,}")
-cols[1].metric("Total Value", f"Rp {df_filtered['Value'].sum():,.0f}")
+cols[1].metric("Total Value", format_rupiah_compact(total_value))
 cols[2].metric("Total Qty", f"{df_filtered['Qty'].sum():,.0f}")
 cols[3].metric("Toko", f"{df_filtered['Kode Store'].nunique():,}")
 cols[4].metric("SKU", f"{df_filtered['SKU'].nunique():,}")
 
 with st.expander("Detail cleaning outlier"):
+    st.write(f"Total Value lengkap: **Rp {total_value:,.0f}**")
     st.write(f"Baris sebelum outlier filter: **{cleaning_info['before']:,}**")
     st.write(f"Baris setelah outlier filter: **{cleaning_info['after']:,}**")
     st.write(f"Baris terhapus: **{cleaning_info['removed']:,}**")
