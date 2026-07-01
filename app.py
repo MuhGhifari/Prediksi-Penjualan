@@ -71,16 +71,25 @@ def clean_data(df_raw: pd.DataFrame, q_value: float, q_qty: float) -> tuple[pd.D
 def apply_filters(
     df: pd.DataFrame,
     channels: list[str],
-    brands: list[str],
     stores: list[str],
+    brands: list[str],
+    subbrands: list[str],
+    product_groups: list[str],
+    skus: list[str],
 ) -> pd.DataFrame:
     filtered = df.copy()
     if channels:
         filtered = filtered[filtered["Channel"].isin(channels)]
-    if brands:
-        filtered = filtered[filtered["Brand"].isin(brands)]
     if stores:
         filtered = filtered[filtered["Nama Store"].isin(stores)]
+    if brands:
+        filtered = filtered[filtered["Brand"].isin(brands)]
+    if subbrands:
+        filtered = filtered[filtered["Subbrand"].isin(subbrands)]
+    if product_groups:
+        filtered = filtered[filtered["Product Group"].isin(product_groups)]
+    if skus:
+        filtered = filtered[filtered["SKU"].isin(skus)]
     return filtered.copy()
 
 
@@ -230,123 +239,6 @@ def cluster_stores(df: pd.DataFrame, cluster_choice: str, manual_k: int):
     return store_stats, cluster_profile, sil_scores, best_k, explained
 
 
-def make_dashboard(
-    daily: pd.DataFrame,
-    future_df: pd.DataFrame,
-    results: dict,
-    store_stats: pd.DataFrame,
-    cluster_profile: pd.DataFrame,
-    sil_scores: dict,
-    best_k: int,
-    explained,
-    df: pd.DataFrame,
-) -> plt.Figure:
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig = plt.figure(figsize=(20, 22))
-    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.42, wspace=0.32)
-
-    ax1 = fig.add_subplot(gs[0, :])
-    ax1.fill_between(daily["Date"], daily["TotalValue"] / 1e6, alpha=0.2, color=COLORS[0])
-    ax1.plot(daily["Date"], daily["TotalValue"] / 1e6, color=COLORS[0], lw=1.5, label="Aktual")
-    ax1.plot(
-        future_df["Date"],
-        future_df["Predicted"] / 1e6,
-        color=COLORS[1],
-        lw=2.5,
-        linestyle="--",
-        marker="o",
-        markersize=4,
-        label="Prediksi",
-    )
-    ax1.axvline(daily["Date"].max(), color="gray", linestyle=":", lw=1.5)
-    ax1.set_title("Tren Penjualan Harian dan Prediksi", fontsize=14, fontweight="bold")
-    ax1.set_ylabel("Total Nilai Penjualan (Juta Rp)")
-    ax1.legend(fontsize=10)
-    ax1.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter("%b %Y"))
-
-    ax2 = fig.add_subplot(gs[1, 0])
-    model_names = list(results.keys())
-    r2_vals = [results[n]["R2"] for n in model_names]
-    bars = ax2.barh(model_names, r2_vals, color=[COLORS[0], COLORS[1], COLORS[2]])
-    ax2.set_xlim(min(0, min(r2_vals) - 0.1), max(1, max(r2_vals) + 0.1))
-    ax2.set_title("Perbandingan Akurasi Model (R2 Score)", fontsize=12, fontweight="bold")
-    ax2.set_xlabel("R2 Score")
-    for bar, val in zip(bars, r2_vals):
-        ax2.text(val + 0.01, bar.get_y() + bar.get_height() / 2, f"{val:.3f}", va="center")
-
-    ax3 = fig.add_subplot(gs[1, 1])
-    mae_vals = [results[n]["MAE"] / 1e6 for n in model_names]
-    bars2 = ax3.barh(model_names, mae_vals, color=[COLORS[0], COLORS[1], COLORS[2]])
-    ax3.set_title("MAE Model (Juta Rp) - Lebih Kecil Lebih Baik", fontsize=12, fontweight="bold")
-    ax3.set_xlabel("MAE (Juta Rp)")
-    for bar, val in zip(bars2, mae_vals):
-        ax3.text(bar.get_width() + 0.1, bar.get_y() + bar.get_height() / 2, f"{val:.2f}", va="center")
-
-    ax4 = fig.add_subplot(gs[2, 0])
-    ax4.scatter(
-        store_stats["PC1"],
-        store_stats["PC2"],
-        c=[COLORS[int(c) % len(COLORS)] for c in store_stats["Cluster"]],
-        alpha=0.7,
-        edgecolors="white",
-        linewidth=0.5,
-        s=60,
-    )
-    for c in range(best_k):
-        sub = store_stats[store_stats["Cluster"] == c]
-        if len(sub):
-            ax4.annotate(
-                f"Klaster {c}",
-                (sub["PC1"].mean(), sub["PC2"].mean()),
-                fontsize=10,
-                fontweight="bold",
-                color=COLORS[c % len(COLORS)],
-                ha="center",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-            )
-    ax4.set_title(f"Clustering Toko (K-Means, k={best_k})", fontsize=12, fontweight="bold")
-    ax4.set_xlabel(f"PC1 ({explained[0] * 100:.1f}%)")
-    ax4.set_ylabel(f"PC2 ({explained[1] * 100:.1f}%)")
-
-    ax5 = fig.add_subplot(gs[2, 1])
-    x, width = np.arange(best_k), 0.35
-    ax5.bar(x - width / 2, cluster_profile["Avg_TotalValue"] / 1e6, width, color=COLORS[0], label="Avg Total Value")
-    ax5r = ax5.twinx()
-    ax5r.bar(x + width / 2, cluster_profile["Avg_TxCount"], width, color=COLORS[1], label="Avg Tx Count")
-    ax5.set_xticks(x)
-    ax5.set_xticklabels([f"Klaster {i}" for i in range(best_k)])
-    ax5.set_title("Profil Setiap Klaster", fontsize=12, fontweight="bold")
-    ax5.set_ylabel("Avg Total Value (Juta Rp)", color=COLORS[0])
-    ax5r.set_ylabel("Avg Tx Count", color=COLORS[1])
-
-    ax6 = fig.add_subplot(gs[3, 0])
-    ch_brand = df.groupby(["Channel", "Brand"])["Value"].sum().unstack().fillna(0) / 1e6
-    ch_brand.plot(kind="bar", ax=ax6, color=COLORS[: len(ch_brand.columns)], edgecolor="white")
-    ax6.set_title("Nilai Penjualan per Channel dan Brand", fontsize=12, fontweight="bold")
-    ax6.set_xlabel("Channel")
-    ax6.set_ylabel("Total Nilai (Juta Rp)")
-    ax6.legend(title="Brand", fontsize=8)
-    ax6.tick_params(axis="x", rotation=0)
-
-    ax7 = fig.add_subplot(gs[3, 1])
-    if sil_scores:
-        ax7.plot(list(sil_scores.keys()), list(sil_scores.values()), marker="o", color=COLORS[2], lw=2.5)
-        ax7.axvline(best_k, color=COLORS[3], linestyle="--", lw=2, label=f"Best k={best_k}")
-        ax7.set_xticks(list(sil_scores.keys()))
-        ax7.legend(fontsize=10)
-    ax7.set_title("Silhouette Score untuk Menentukan Jumlah Klaster", fontsize=12, fontweight="bold")
-    ax7.set_xlabel("Jumlah Klaster (k)")
-    ax7.set_ylabel("Silhouette Score")
-
-    fig.suptitle(
-        "Sales Analytics Dashboard - Bogor Region 2025\nPrediksi Penjualan dan Segmentasi Toko",
-        fontsize=16,
-        fontweight="bold",
-        y=1.01,
-    )
-    return fig
-
-
 def build_excel(future_df: pd.DataFrame, store_stats: pd.DataFrame, metrics: pd.DataFrame) -> bytes:
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -357,10 +249,18 @@ def build_excel(future_df: pd.DataFrame, store_stats: pd.DataFrame, metrics: pd.
 
 
 def plot_cluster_scatter(store_stats: pd.DataFrame, best_k: int, explained) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(12, 5.5))
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.patch.set_facecolor('none')
+    ax.set_facecolor('none')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('#cccccc')
+    ax.spines['bottom'].set_color('#cccccc')
+    ax.tick_params(colors='#888888')
+    
     size_base = store_stats["TotalValue"].clip(lower=0)
     max_size = max(size_base.max(), 1)
-    sizes = 40 + (size_base / max_size) * 320
+    sizes = 60 + (size_base / max_size) * 400
 
     scatter = ax.scatter(
         store_stats["PC1"],
@@ -379,19 +279,20 @@ def plot_cluster_scatter(store_stats: pd.DataFrame, best_k: int, explained) -> p
             f"Klaster {int(cluster_id)}",
             (sub["PC1"].mean(), sub["PC2"].mean()),
             ha="center",
-            fontsize=10,
+            fontsize=9,
             fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85),
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85, edgecolor='#dddddd'),
         )
 
     ticks = sorted(store_stats["Cluster"].unique())
     cbar = fig.colorbar(scatter, ax=ax, ticks=ticks)
-    cbar.set_label("Cluster")
+    cbar.set_label("Cluster", color='#888888')
+    cbar.ax.yaxis.set_tick_params(color='#888888', labelcolor='#888888')
+    cbar.outline.set_edgecolor('#cccccc')
 
-    ax.set_title(f"Clustering Toko (Red to Blue), k={best_k}", fontweight="bold")
-    ax.set_xlabel(f"PC1 ({explained[0] * 100:.1f}%)")
-    ax.set_ylabel(f"PC2 ({explained[1] * 100:.1f}%)")
-    ax.grid(True, alpha=0.25)
+    ax.set_xlabel(f"PC1 ({explained[0] * 100:.1f}%)", color='#888888')
+    ax.set_ylabel(f"PC2 ({explained[1] * 100:.1f}%)", color='#888888')
+    ax.grid(True, linestyle=':', alpha=0.4, color='#888888')
     fig.tight_layout()
     return fig
 
@@ -405,26 +306,61 @@ def format_rupiah_compact(value: float) -> str:
     if abs_value >= 1_000_000:
         return f"Rp {value / 1_000_000:.2f} Juta"
     if abs_value >= 1_000:
-        return f"Rp {value / 1_000:.2f} ribu"
+        return f"Rp {value / 1_000:.2f} Ribu"
     return f"Rp {value:,.0f}"
 
 
-st.title("Prediksi Penjualan dan Clustering Toko")
-st.caption("Streamlit app berdasarkan notebook `sales_prediction_bogor (testing).ipynb`.")
+# Custom CSS styling for premium look & layout
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+    
+    .kpi-container {
+        padding: 1.25rem;
+        border-radius: 12px;
+        background-color: rgba(128, 128, 128, 0.05);
+        border: 1px solid rgba(128, 128, 128, 0.15);
+        margin-bottom: 1rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03);
+        text-align: center;
+        transition: transform 0.2s ease;
+    }
+    
+    .kpi-container:hover {
+        transform: translateY(-2px);
+        background-color: rgba(128, 128, 128, 0.08);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    """
+    <div style="background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%); padding: 2.5rem; border-radius: 16px; color: white; margin-bottom: 2.5rem; box-shadow: 0 10px 15px -3px rgba(79, 70, 229, 0.2);">
+        <h1 style="color: white; margin: 0; font-size: 2.25rem; font-weight: 800;">Bogor Sales Intelligence Hub</h1>
+        <p style="margin: 0.5rem 0 0 0; opacity: 0.9; font-size: 1rem;">Platform Prediksi Penjualan & Segmentasi Toko Berbasis AI</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 with st.sidebar:
-    st.header("Data")
-    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-    forecast_days = st.slider("Jumlah hari prediksi", min_value=7, max_value=90, value=30)
-    q_value = st.slider("Batas outlier Value", 0.90, 1.00, 0.99, 0.01)
-    q_qty = st.slider("Batas outlier Qty", 0.90, 1.00, 0.99, 0.01)
-    model_choice = st.selectbox(
-        "Model prediksi",
-        ["Auto Best R2", "Linear Regression", "Random Forest", "Gradient Boosting"],
-    )
-    cluster_choice = st.radio("Jumlah klaster", ["Auto Silhouette", "Manual"])
-    manual_k = st.slider("Manual k", 2, 7, 3, disabled=cluster_choice == "Auto Silhouette")
+    st.header("Sumber Data")
+    uploaded_file = st.file_uploader("Unggah File Penjualan (CSV)", type=["csv"])
 
+# Set default modeling/clustering parameters
+forecast_days = 30
+q_value = 0.99
+q_qty = 0.99
+model_choice = "Auto Best R2"
+cluster_choice = "Auto Silhouette"
+manual_k = 3
 
 try:
     if uploaded_file is not None:
@@ -437,22 +373,81 @@ except Exception as exc:
     st.error(f"Gagal memuat data: {exc}")
     st.stop()
 
+# Clean data with default outlier settings
 df, cleaning_info = clean_data(raw_df, q_value, q_qty)
 
-with st.sidebar:
-    st.header("Filter")
-    channels = sorted(df["Channel"].dropna().unique().tolist())
-    brands = sorted(df["Brand"].dropna().unique().tolist())
-    stores = sorted(df["Nama Store"].dropna().unique().tolist())
-    selected_channels = st.multiselect("Channel", channels)
-    selected_brands = st.multiselect("Brand", brands)
-    selected_stores = st.multiselect("Store", stores)
+# Define Tabs
+tab_overview, tab_lookup, tab_cluster, tab_model, tab_data = st.tabs(
+    [
+        "📊 Ringkasan Eksekutif",
+        "🔍 Pencarian & Prediksi",
+        "🎯 Segmentasi Toko (Clustering)",
+        "🤖 Evaluasi Model AI",
+        "📁 Eksplorasi Data"
+    ]
+)
 
-df_filtered = apply_filters(df, selected_channels, selected_brands, selected_stores)
+# Render filter parameters inside the Pencarian Prediksi tab first, to get their selection values
+with tab_lookup:
+    st.subheader("Pencarian Prediksi Berdasarkan Parameter Terpilih")
+    st.write(
+        "Gunakan bagian di bawah ini untuk menentukan Store (Toko), Brand, Product (SKU), dan Tanggal. "
+        "Model prediksi akan dilatih ulang secara otomatis untuk data hasil filter tersebut."
+    )
+    
+    col_filt1, col_filt2 = st.columns(2)
+    with col_filt1:
+        # Store Filter
+        stores = sorted(df["Nama Store"].dropna().unique().tolist())
+        selected_stores = st.multiselect("Pilih Store / Toko", stores, help="Kosongkan untuk memilih semua store")
+        
+    with col_filt2:
+        # Brand Filter (cascading from Store)
+        df_brand_opt = df
+        if selected_stores:
+            df_brand_opt = df_brand_opt[df_brand_opt["Nama Store"].isin(selected_stores)]
+        brands = sorted(df_brand_opt["Brand"].dropna().unique().tolist())
+        selected_brands = st.multiselect("Pilih Brand / Merek", brands, help="Kosongkan untuk memilih semua brand")
+        
+        # SKU Filter (cascading from Brand)
+        df_sku_opt = df_brand_opt
+        if selected_brands:
+            df_sku_opt = df_sku_opt[df_sku_opt["Brand"].isin(selected_brands)]
+        skus = sorted(df_sku_opt["SKU"].dropna().unique().tolist())
+        selected_skus = st.multiselect("Pilih Product / SKU", skus, help="Kosongkan untuk memilih semua product")
+
+    st.write("---")
+    
+    # Date Picker
+    min_hist_date = df["Date"].min()
+    max_hist_date = df["Date"].max()
+    max_forecast_date = max_hist_date + pd.Timedelta(days=forecast_days)
+    
+    lookup_date = st.date_input(
+        "Pilih Tanggal Pencarian",
+        value=max_hist_date.date(),
+        min_value=min_hist_date.date(),
+        max_value=max_forecast_date.date(),
+        key="lookup_date_picker"
+    )
+    lookup_datetime = pd.to_datetime(lookup_date)
+
+# Apply filters based on selected parameters
+df_filtered = apply_filters(
+    df,
+    [],  # channels (removed)
+    selected_stores,
+    selected_brands,
+    [],  # subbrands (removed)
+    [],  # product_groups (removed)
+    selected_skus,
+)
+
 if df_filtered.empty:
     st.warning("Tidak ada data untuk filter yang dipilih.")
     st.stop()
 
+# Aggregate daily data and train prediction models
 daily = make_daily_features(df_filtered)
 if len(daily) < 30:
     st.warning("Data harian terlalu sedikit untuk training model. Kurangi filter atau gunakan data lebih lengkap.")
@@ -463,7 +458,7 @@ best_name, best_model, future_df = forecast_sales(
     daily, models, results, forecast_days, model_choice
 )
 store_stats, cluster_profile, sil_scores, best_k, explained = cluster_stores(
-    df_filtered, "Manual" if cluster_choice == "Manual" else "Auto", manual_k
+    df_filtered, cluster_choice, manual_k
 )
 
 metrics = (
@@ -477,111 +472,267 @@ metrics = (
     .reset_index(drop=True)
 )
 
-st.subheader("Ringkasan Data")
-st.write(f"Sumber data: `{source_name}`")
-cols = st.columns(5)
-total_value = df_filtered["Value"].sum()
-cols[0].metric("Baris bersih", f"{len(df_filtered):,}")
-cols[1].metric("Total Value", format_rupiah_compact(total_value))
-cols[2].metric("Total Qty", f"{df_filtered['Qty'].sum():,.0f}")
-cols[3].metric("Toko", f"{df_filtered['Kode Store'].nunique():,}")
-cols[4].metric("SKU", f"{df_filtered['SKU'].nunique():,}")
-
-with st.expander("Detail cleaning outlier"):
-    st.write(f"Total Value lengkap: **Rp {total_value:,.0f}**")
-    st.write(f"Baris sebelum outlier filter: **{cleaning_info['before']:,}**")
-    st.write(f"Baris setelah outlier filter: **{cleaning_info['after']:,}**")
-    st.write(f"Baris terhapus: **{cleaning_info['removed']:,}**")
-    st.write(f"Batas Value: **Rp {cleaning_info['value_threshold']:,.0f}**")
-    st.write(f"Batas Qty: **{cleaning_info['qty_threshold']:,.0f}**")
-
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Prediksi", "Evaluasi Model", "Clustering Toko", "Data"]
-)
-
-with tab1:
-    st.subheader("Tren Penjualan dan Prediksi")
-    st.write(f"Model yang digunakan: **{best_name}**")
-    fig, ax = plt.subplots(figsize=(14, 5))
-    ax.fill_between(daily["Date"], daily["TotalValue"] / 1e6, alpha=0.2, color=COLORS[0])
-    ax.plot(daily["Date"], daily["TotalValue"] / 1e6, color=COLORS[0], lw=1.6, label="Aktual")
-    ax.plot(
-        future_df["Date"],
-        future_df["Predicted"] / 1e6,
-        color=COLORS[1],
-        lw=2.4,
-        linestyle="--",
-        marker="o",
-        markersize=4,
-        label=f"Prediksi {forecast_days} Hari",
+# Tab 1: Executive Overview
+with tab_overview:
+    st.subheader("Ringkasan Kinerja Penjualan")
+    
+    # KPI Columns
+    cols = st.columns(4)
+    total_value = df_filtered["Value"].sum()
+    total_qty = df_filtered["Qty"].sum()
+    num_stores = df_filtered["Kode Store"].nunique()
+    num_skus = df_filtered["SKU"].nunique()
+    
+    formatted_revenue = format_rupiah_compact(total_value)
+    
+    with cols[0]:
+        st.markdown(f'<div class="kpi-container"><div style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Total Nilai Penjualan</div><div style="font-size: 1.5rem; font-weight: 700; color: #4f46e5; margin-top: 0.25rem;">{formatted_revenue}</div></div>', unsafe_allow_html=True)
+    with cols[1]:
+        st.markdown(f'<div class="kpi-container"><div style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Kuantitas Penjualan</div><div style="font-size: 1.5rem; font-weight: 700; color: #10b981; margin-top: 0.25rem;">{total_qty:,.0f} Pcs</div></div>', unsafe_allow_html=True)
+    with cols[2]:
+        st.markdown(f'<div class="kpi-container"><div style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Toko Terjangkau</div><div style="font-size: 1.5rem; font-weight: 700; color: #f59e0b; margin-top: 0.25rem;">{num_stores:,} Store</div></div>', unsafe_allow_html=True)
+    with cols[3]:
+        st.markdown(f'<div class="kpi-container"><div style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Katalog Produk</div><div style="font-size: 1.5rem; font-weight: 700; color: #ef4444; margin-top: 0.25rem;">{num_skus:,} SKU</div></div>', unsafe_allow_html=True)
+    
+    st.write("")
+    
+    with st.expander("ℹ️ Klik untuk Melihat Detail Pembersihan Data & Outlier"):
+        st.markdown(f"""
+        * **Sumber File**: `{source_name}`
+        * **Total Baris Valid**: `{len(df_filtered):,}`
+        * **Sebelum Outlier Filter**: `{cleaning_info['before']:,} baris`
+        * **Setelah Outlier Filter**: `{cleaning_info['after']:,} baris` (Pembersihan membuang `{cleaning_info['removed']:,}` baris pencilan)
+        * **Batas Maksimal Value Outlier**: `Rp {cleaning_info['value_threshold']:,.0f}` (Batas persentil `{q_value * 100:.0f}%`)
+        * **Batas Maksimal Qty Outlier**: `{cleaning_info['qty_threshold']:,.0f} unit` (Batas persentil `{q_qty * 100:.0f}%`)
+        """)
+        
+    st.write("---")
+    st.subheader("Tren Penjualan Aktual & Prediksi Masa Depan")
+    st.write(f"Model Forecasting Terpilih: **{best_name}**")
+    
+    # Merge historical and future predictions for rendering
+    chart_df = pd.DataFrame({
+        "Date": pd.concat([daily["Date"], future_df["Date"]], ignore_index=True),
+        "Penjualan Aktual": pd.concat([daily["TotalValue"], pd.Series([np.nan] * len(future_df))], ignore_index=True),
+        "Prediksi AI (30 Hari)": pd.concat([pd.Series([np.nan] * len(daily)), future_df["Predicted"]], ignore_index=True)
+    })
+    
+    # Smooth connection
+    if len(daily) > 0:
+        chart_df.loc[len(daily) - 1, "Prediksi AI (30 Hari)"] = daily.iloc[-1]["TotalValue"]
+        
+    chart_df = chart_df.set_index("Date")
+    st.line_chart(chart_df, color=["#4f46e5", "#10b981"])
+    
+    st.write("")
+    st.write("---")
+    st.subheader("Unduh Laporan Executive")
+    st.write("Unduh data hasil analisis segmentasi, model evaluasi, dan forecast masa depan dalam satu file Excel profesional.")
+    excel_bytes = build_excel(future_df, store_stats, metrics)
+    st.download_button(
+        "📥 Unduh Laporan Lengkap (Excel / .xlsx)",
+        excel_bytes,
+        "laporan_sales_bogor.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
     )
-    ax.axvline(daily["Date"].max(), color="gray", linestyle=":", lw=1.5)
-    ax.set_ylabel("Total Nilai Penjualan (Juta Rp)")
-    ax.legend()
-    st.pyplot(fig)
 
+# Tab 2: Prediction Lookup Results
+with tab_lookup:
+    st.write("---")
+    st.subheader("Hasil Pencarian Prediksi & Historis")
+    
+    # Summary of currently active filters
+    st.markdown(f"""
+    **Segmentasi Pencarian Aktif**:
+    * **Store**: {', '.join(selected_stores) if selected_stores else 'Semua Toko'}
+    * **Brand**: {', '.join(selected_brands) if selected_brands else 'Semua Brand'}
+    * **Product (SKU)**: {', '.join(selected_skus) if selected_skus else 'Semua SKU'}
+    """)
+    
+    forecast_row = future_df[future_df["Date"] == lookup_datetime]
+    hist_row = daily[daily["Date"] == lookup_datetime]
+    backtest_row = backtest[backtest["Date"] == lookup_datetime] if not backtest.empty else pd.DataFrame()
+    
+    col_res1, col_res2 = st.columns([1, 2])
+    with col_res1:
+        if not forecast_row.empty:
+            pred_val = forecast_row.iloc[0]["Predicted"]
+            st.markdown("### Status: **Prediksi Masa Depan**")
+            st.metric(
+                label=f"Perkiraan Nilai Penjualan ({lookup_date.strftime('%d %b %Y')})",
+                value=format_rupiah_compact(pred_val),
+            )
+        elif not hist_row.empty:
+            actual_val = hist_row.iloc[0]["TotalValue"]
+            st.markdown("### Status: **Data Historis (Aktual)**")
+            if not backtest_row.empty and best_name in backtest_row.columns:
+                pred_backtest = backtest_row.iloc[0][best_name]
+                error = actual_val - pred_backtest
+                error_pct = (error / actual_val) * 100 if actual_val != 0 else 0
+                
+                st.metric("Nilai Aktual Terjual", format_rupiah_compact(actual_val))
+                st.metric(
+                    f"Prediksi AI ({best_name})", 
+                    format_rupiah_compact(pred_backtest), 
+                    f"Selisih Margin: {error_pct:.2f}%", 
+                    delta_color="inverse"
+                )
+            else:
+                st.metric("Nilai Aktual Terjual", format_rupiah_compact(actual_val))
+        else:
+            st.warning("Tidak ada data transaksi atau prediksi pada tanggal yang dipilih.")
+            
+    with col_res2:
+        # Context window chart
+        st.markdown("##### Tren Penjualan Sekitar Tanggal Pencarian (± 7 Hari)")
+        start_win = lookup_datetime - pd.Timedelta(days=7)
+        end_win = lookup_datetime + pd.Timedelta(days=7)
+        
+        win_hist = daily[(daily["Date"] >= start_win) & (daily["Date"] <= end_win)]
+        win_fore = future_df[(future_df["Date"] >= start_win) & (future_df["Date"] <= end_win)]
+        
+        if not win_hist.empty or not win_fore.empty:
+            fig_win, ax_win = plt.subplots(figsize=(8, 4))
+            fig_win.patch.set_facecolor('none')
+            ax_win.set_facecolor('none')
+            ax_win.spines['top'].set_visible(False)
+            ax_win.spines['right'].set_visible(False)
+            ax_win.spines['left'].set_color('#cccccc')
+            ax_win.spines['bottom'].set_color('#cccccc')
+            ax_win.tick_params(colors='#888888')
+            ax_win.grid(True, linestyle=':', alpha=0.5, color='#888888')
+            
+            if not win_hist.empty:
+                ax_win.plot(win_hist["Date"], win_hist["TotalValue"] / 1e6, marker='o', label="Aktual", color="#4f46e5", alpha=0.8)
+            if not win_fore.empty:
+                ax_win.plot(win_fore["Date"], win_fore["Predicted"] / 1e6, marker='s', linestyle='--', label="Prediksi", color="#10b981", alpha=0.8)
+                
+            ax_win.axvline(lookup_datetime, color='#ef4444', linestyle=':', label=f"Tanggal Cari ({lookup_date.strftime('%d-%b')})", lw=2)
+            ax_win.set_ylabel("Nilai Penjualan (Juta Rp)", color='#888888')
+            ax_win.legend(loc="upper left")
+            plt.tight_layout()
+            st.pyplot(fig_win)
+        else:
+            st.info("Data tidak cukup untuk menampilkan tren sekitar tanggal terpilih.")
+            
+    st.write("---")
+    st.subheader("Data Hasil Forecast Lengkap (30 Hari)")
     display_future = future_df.copy()
     display_future["Predicted"] = display_future["Predicted"].round(0)
     st.dataframe(display_future, use_container_width=True)
     st.download_button(
-        "Download prediksi CSV",
+        "📥 Unduh Tabel Prediksi Saja (CSV)",
         display_future.to_csv(index=False).encode("utf-8"),
-        "prediksi_penjualan.csv",
+        "forecast_penjualan.csv",
         "text/csv",
+        use_container_width=True
     )
 
-with tab2:
-    st.subheader("Hasil Evaluasi Model")
-    st.dataframe(metrics, use_container_width=True)
-    c1, c2 = st.columns(2)
-    c1.bar_chart(metrics.set_index("Model")[["R2"]])
-    c2.bar_chart(metrics.set_index("Model")[["MAE", "RMSE"]])
-
-    st.subheader("Backtest Aktual vs Prediksi")
-    backtest_chart = backtest[["Date", "Aktual", best_name]].set_index("Date")
-    st.line_chart(backtest_chart)
-
-with tab3:
-    st.subheader(f"Clustering Toko - k={best_k}")
-    st.dataframe(cluster_profile, use_container_width=True)
-
+# Tab 3: Store Segmentation / Clustering
+with tab_cluster:
+    st.subheader(f"Analisis Segmentasi Toko (K-Means Clustering, k={best_k})")
+    st.markdown(
+        "Model K-Means mengelompokkan toko berdasarkan 5 dimensi: **Total Nilai Penjualan**, **Kuantitas Produk**, "
+        "**Jumlah Transaksi**, **Rata-Rata Nilai Belanja**, dan **Variasi SKU** yang terjual."
+    )
+    
+    # Sort cluster profile by Total Value to assign business-friendly names
+    profile_sorted = cluster_profile.sort_values("Avg_TotalValue", ascending=False).reset_index()
+    cluster_names = {}
+    labels = [
+        "🏆 Klaster Emas (Toko Utama / Kinerja Tinggi)",
+        "🥈 Klaster Perak (Toko Menengah / Kinerja Sedang)",
+        "🥉 Klaster Perunggu (Toko Kecil / Potensial)"
+    ]
+    for idx, row in profile_sorted.iterrows():
+        c_id = int(row["Cluster"])
+        label = labels[idx] if idx < len(labels) else f"Klaster {c_id} (Lainnya)"
+        cluster_names[c_id] = label
+        
+    disp_profile = cluster_profile.copy()
+    disp_profile["Kategori Segmen"] = disp_profile["Cluster"].map(cluster_names)
+    disp_profile["Jumlah Toko"] = disp_profile["Jumlah_Toko"]
+    disp_profile["Rata-Rata Revenue"] = disp_profile["Avg_TotalValue"].apply(format_rupiah_compact)
+    disp_profile["Rata-Rata Transaksi"] = disp_profile["Avg_TxCount"].round(1)
+    disp_profile["Rata-Rata Nilai Order"] = disp_profile["Avg_OrderValue"].apply(format_rupiah_compact)
+    disp_profile["Rata-Rata SKU Unik"] = disp_profile["Avg_SKU"].round(1)
+    
+    disp_cols = [
+        "Kategori Segmen", "Jumlah Toko", "Rata-Rata Revenue", 
+        "Rata-Rata Transaksi", "Rata-Rata Nilai Order", "Rata-Rata SKU Unik"
+    ]
+    st.dataframe(disp_profile[disp_cols].set_index("Kategori Segmen"), use_container_width=True)
+    
+    st.write("---")
+    st.subheader("Peta Segmentasi Toko (Visualisasi PCA 2D)")
+    st.markdown(
+        "Visualisasi di bawah menggunakan reduksi dimensi PCA untuk memetakan toko berdimensi tinggi ke ruang 2D. "
+        "Toko dengan performa operasional yang mirip akan mengelompok bersama."
+    )
     if best_k > 1:
         st.pyplot(plot_cluster_scatter(store_stats, best_k, explained))
-
+        
     if sil_scores:
-        st.subheader("Silhouette Score")
+        st.write("---")
+        st.subheader("Silhouette Score (Penentuan Jumlah Klaster Optimal)")
+        st.markdown(
+            "Skor Silhouette mengukur seberapa dekat setiap titik dalam satu klaster dengan titik di klaster tetangga. "
+            "Skor tertinggi menunjukkan pembagian segmen yang paling optimal secara matematis."
+        )
         sil_df = pd.DataFrame(
-            {"k": list(sil_scores.keys()), "Silhouette Score": list(sil_scores.values())}
-        ).set_index("k")
+            {"k (Jumlah Klaster)": list(sil_scores.keys()), "Silhouette Score": list(sil_scores.values())}
+        ).set_index("k (Jumlah Klaster)")
         st.line_chart(sil_df)
+        
+    st.write("---")
+    st.subheader("Data Lengkap Klasifikasi Toko")
+    disp_stats = store_stats.copy()
+    disp_stats["Segmen Bisnis"] = disp_stats["Cluster"].map(cluster_names)
+    disp_stats["Total Penjualan"] = disp_stats["TotalValue"].apply(format_rupiah_compact)
+    disp_stats["Kuantitas Penjualan"] = disp_stats["TotalQty"]
+    disp_stats["Jumlah Transaksi"] = disp_stats["TxCount"]
+    disp_stats["Rata-Rata Nilai Order"] = disp_stats["AvgOrder"].apply(format_rupiah_compact)
+    disp_stats["Katalog SKU Unik"] = disp_stats["UniqueSKU"]
+    
+    detail_cols = ["Nama Store", "Channel", "Segmen Bisnis", "Total Penjualan", "Kuantitas Penjualan", "Jumlah Transaksi", "Rata-Rata Nilai Order", "Katalog SKU Unik"]
+    st.dataframe(disp_stats[detail_cols].set_index("Nama Store"), use_container_width=True)
 
-    st.subheader("Hasil Clustering per Toko")
-    st.dataframe(store_stats, use_container_width=True)
+# Tab 4: AI Model Evaluation
+with tab_model:
+    st.subheader("Laporan Performa Model AI (Evaluasi Backtest)")
+    st.markdown(
+        "Akurasi model dievaluasi menggunakan metode *Backtesting* (melatih model pada data historis "
+        "dan membandingkan prediksinya dengan sisa data aktual pengujian)."
+    )
+    
+    disp_metrics = metrics.copy()
+    disp_metrics.columns = ["Algoritma Model AI", "Rata-Rata Margin Kesalahan (MAE)", "Standar Deviasi Kesalahan (RMSE)", "Skor Akurasi Prediksi (R2 Score)"]
+    st.dataframe(disp_metrics.set_index("Algoritma Model AI"), use_container_width=True)
+    
+    st.write("---")
+    st.subheader("Perbandingan Akurasi Akurasi (R2 Score)")
+    st.markdown(
+        "R2 Score mengukur seberapa baik model dapat menjelaskan variasi pola data. Nilai mendekati 1.000 menunjukkan akurasi yang tinggi."
+    )
+    r2_df = metrics[["Model", "R2"]].set_index("Model")
+    st.bar_chart(r2_df, color="#4f46e5")
+    
+    st.write("---")
+    st.subheader("Grafik Pengujian Backtest (Aktual vs Prediksi AI)")
+    st.markdown(
+        "Memvisualisasikan kemampuan model terpilih (**%s**) dalam merekonstruksi data aktual selama masa uji backtest." % best_name
+    )
+    backtest_chart = backtest[["Date", "Aktual", best_name]].set_index("Date")
+    st.line_chart(backtest_chart, color=["#4f46e5", "#10b981"])
 
-with tab4:
-    st.subheader("Data Bersih")
+# Tab 5: Data Explorer
+with tab_data:
+    st.subheader("Database Transaksi (Filtered)")
+    st.markdown("Menampilkan tabel data transaksi yang telah dibersihkan dan disaring berdasarkan parameter pencarian.")
     st.dataframe(df_filtered, use_container_width=True)
-    st.subheader("Data Harian untuk Modeling")
+    
+    st.write("---")
+    st.subheader("Data Harian Teragregasi (Input Fitur AI)")
+    st.markdown("Representasi data teragregasi per hari yang digunakan sebagai parameter input fitur waktu/lag oleh AI.")
     st.dataframe(daily, use_container_width=True)
-
-st.subheader("Dashboard Lengkap")
-dashboard_fig = make_dashboard(
-    daily,
-    future_df,
-    results,
-    store_stats,
-    cluster_profile,
-    sil_scores,
-    best_k,
-    explained,
-    df_filtered,
-)
-st.pyplot(dashboard_fig)
-
-excel_bytes = build_excel(display_future, store_stats, metrics)
-st.download_button(
-    "Download semua hasil sebagai Excel",
-    excel_bytes,
-    "hasil_prediksi_dan_clustering.xlsx",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
