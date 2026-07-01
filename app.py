@@ -47,27 +47,51 @@ def load_from_upload(file_bytes: bytes) -> pd.DataFrame:
     return pd.read_csv(BytesIO(file_bytes), sep=";", encoding="utf-8-sig")
 
 
-def clean_data(df_raw: pd.DataFrame, q_value: float, q_qty: float) -> tuple[pd.DataFrame, dict]:
-    df = df_raw.dropna(subset=["Date", "Value", "Qty", "Brand"]).copy()
+def clean_data(df_raw: pd.DataFrame, q_value: float, q_qty: float) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    # Keep track of original raw index
+    raw_df_with_idx = df_raw.copy()
+    raw_df_with_idx["_orig_index"] = raw_df_with_idx.index
+    
+    # 1. Drop missing critical columns
+    df = raw_df_with_idx.dropna(subset=["Date", "Value", "Qty", "Brand"]).copy()
+    
+    # 2. Parse types and drop parsing failures
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Value"] = pd.to_numeric(df["Value"], errors="coerce")
     df["Qty"] = pd.to_numeric(df["Qty"], errors="coerce")
     df = df.dropna(subset=["Date", "Value", "Qty"]).copy()
 
     before = len(df)
-    q_val = df["Value"].quantile(q_value)
-    q_qt = df["Qty"].quantile(q_qty)
-    outlier_mask = (df["Value"] > q_val) | (df["Qty"] > q_qt)
-    df = df.loc[~outlier_mask].sort_values("Date").reset_index(drop=True)
+    
+    # 3. Filter outliers (Only filter out the extreme 2B integer overflow placeholder)
+    outlier_mask = df["Qty"] > 2_000_000_000
+    df_clean = df.loc[~outlier_mask].copy()
+    
+    # Reset index and clean temporary columns
+    df_clean_final = df_clean.sort_values("Date").reset_index(drop=True)
+    if "_orig_index" in df_clean_final.columns:
+        df_clean_final = df_clean_final.drop(columns=["_orig_index"])
+    
+    # The rows that were removed at any stage:
+    clean_orig_indices = set(df_clean["_orig_index"])
+    removed_mask = ~raw_df_with_idx["_orig_index"].isin(clean_orig_indices)
+    df_removed = df_raw.loc[removed_mask].copy()
+    
+    # Add a column explaining WHY it was removed
+    df_removed["Alasan Dihapus"] = "Data Kosong"
+    
+    # Update reasons for records that failed the outlier check
+    outlier_orig_indices = set(df.loc[outlier_mask, "_orig_index"])
+    df_removed.loc[df_removed.index.isin(outlier_orig_indices), "Alasan Dihapus"] = "Outlier"
 
     info = {
         "before": before,
-        "after": len(df),
+        "after": len(df_clean_final),
         "removed": int(outlier_mask.sum()),
-        "value_threshold": q_val,
-        "qty_threshold": q_qt,
+        "value_threshold": 0.0,
+        "qty_threshold": 2_000_000_000.0,
     }
-    return df, info
+    return df_clean_final, info, df_removed
 
 
 def apply_filters(
@@ -390,7 +414,7 @@ except Exception as exc:
     st.stop()
 
 # Clean data with default outlier settings
-df, cleaning_info = clean_data(raw_df, q_value, q_qty)
+df, cleaning_info, df_removed = clean_data(raw_df, q_value, q_qty)
 
 # Define Tabs
 tab_overview, tab_lookup, tab_cluster, tab_model, tab_data = st.tabs(
@@ -515,11 +539,10 @@ with tab_overview:
     with st.expander("ℹ️ Klik untuk Melihat Detail Pembersihan Data & Outlier"):
         st.markdown(f"""
         * **Sumber File**: `{source_name}`
-        * **Total Baris Valid**: `{len(df_filtered):,}`
+        * **Total Baris Valid (Filtered)**: `{len(df_filtered):,}`
         * **Sebelum Outlier Filter**: `{cleaning_info['before']:,} baris`
-        * **Setelah Outlier Filter**: `{cleaning_info['after']:,} baris` (Pembersihan membuang `{cleaning_info['removed']:,}` baris pencilan)
-        * **Batas Maksimal Value Outlier**: `Rp {cleaning_info['value_threshold']:,.0f}` (Batas persentil `{q_value * 100:.0f}%`)
-        * **Batas Maksimal Qty Outlier**: `{cleaning_info['qty_threshold']:,.0f} unit` (Batas persentil `{q_qty * 100:.0f}%`)
+        * **Setelah Outlier Filter**: `{cleaning_info['after']:,} baris` (Pembersihan membuang `{cleaning_info['removed']:,}` baris outlier ekstrem)
+        * **Aturan Outlier**: Hanya menyaring baris placeholder overflow (`Qty > 2 Miliar`)
         """)
         
     st.write("---")
@@ -752,10 +775,68 @@ with tab_cluster:
             "Skor Silhouette mengukur seberapa dekat setiap titik dalam satu klaster dengan titik di klaster tetangga. "
             "Skor tertinggi menunjukkan pembagian segmen yang paling optimal secara matematis."
         )
-        sil_df = pd.DataFrame(
-            {"k (Jumlah Klaster)": list(sil_scores.keys()), "Silhouette Score": list(sil_scores.values())}
-        ).set_index("k (Jumlah Klaster)")
-        st.line_chart(sil_df)
+        
+        # Plotly Silhouette Score Chart
+        fig_sil = go.Figure()
+        ks = list(sil_scores.keys())
+        scores = list(sil_scores.values())
+        best_k_val = max(sil_scores, key=sil_scores.get)
+        
+        fig_sil.add_trace(go.Scatter(
+            x=ks,
+            y=scores,
+            mode="lines+markers",
+            name="Score",
+            line=dict(color="#f59e0b", width=3),
+            marker=dict(size=8, color="#f59e0b"),
+            hovertemplate="Jumlah Klaster (k): %{x}<br>Score: %{y:.4f}<extra></extra>"
+        ))
+        
+        # Highlight best k with vertical red dashed line
+        best_score = sil_scores[best_k_val]
+        fig_sil.add_shape(
+            type="line",
+            x0=best_k_val,
+            y0=min(scores) - 0.01,
+            x1=best_k_val,
+            y1=max(scores) + 0.01,
+            line=dict(color="#ef4444", width=2, dash="dash"),
+        )
+        
+        # Add annotation for Best k
+        fig_sil.add_annotation(
+            x=best_k_val,
+            y=best_score,
+            text=f"Best k={best_k_val}",
+            showarrow=True,
+            arrowhead=2,
+            arrowcolor="#ef4444",
+            arrowsize=1,
+            arrowwidth=2,
+            ax=40,
+            ay=-30,
+            bgcolor="rgba(239, 68, 68, 0.1)",
+            bordercolor="#ef4444",
+            borderwidth=1,
+            borderpad=4,
+            font=dict(size=11, color="#ef4444")
+        )
+        
+        # Enable auto-scaling (disable zero baseline)
+        fig_sil.update_layout(
+            xaxis_title="Jumlah Cluster (k)",
+            yaxis_title="Score",
+            margin=dict(l=0, r=0, t=10, b=0),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(tickmode="linear", tick0=2, dtick=1, showgrid=True, gridcolor="rgba(128,128,128,0.15)"),
+            yaxis=dict(
+                showgrid=True, 
+                gridcolor="rgba(128,128,128,0.15)",
+                rangemode="normal"
+            )
+        )
+        st.plotly_chart(fig_sil, use_container_width=True)
         
     st.write("---")
     st.subheader("Data Lengkap Klasifikasi Toko")
@@ -772,39 +853,40 @@ with tab_cluster:
 
 # Tab 4: AI Model Evaluation
 with tab_model:
-    st.subheader("Laporan Performa Model AI (Evaluasi Backtest)")
+    st.subheader(f"Laporan Performa Model AI ({best_name})")
     st.markdown(
         "Akurasi model dievaluasi menggunakan metode *Backtesting* (melatih model pada data historis "
         "dan membandingkan prediksinya dengan sisa data aktual pengujian)."
     )
     
-    disp_metrics = metrics.copy()
-    disp_metrics.columns = ["Algoritma Model AI", "Rata-Rata Margin Kesalahan (MAE)", "Standar Deviasi Kesalahan (RMSE)", "Skor Akurasi Prediksi (R2 Score)"]
-    st.dataframe(disp_metrics.set_index("Algoritma Model AI"), use_container_width=True)
+    # Get metrics for the active model
+    best_metrics = metrics[metrics["Model"] == best_name].iloc[0]
     
-    st.write("---")
-    st.subheader("Perbandingan Akurasi (R2 Score)")
-    st.markdown(
-        "R2 Score mengukur seberapa baik model dapat menjelaskan variasi pola data. Nilai mendekati 1.000 menunjukkan akurasi yang tinggi."
-    )
-    fig_r2 = px.bar(
-        metrics,
-        x="Model",
-        y="R2",
-        color="Model",
-        text_auto=".3f",
-        labels={"R2": "R2 Score", "Model": "Algoritma"},
-        color_discrete_sequence=["#4f46e5", "#10b981", "#f59e0b"]
-    )
-    fig_r2.update_layout(
-        margin=dict(l=0, r=0, t=10, b=0),
-        showlegend=False,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(showgrid=False),
-        yaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
-    )
-    st.plotly_chart(fig_r2, use_container_width=True)
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.markdown(
+            f'<div class="kpi-container">'
+            f'<div style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Skor Akurasi Prediksi (R2 Score)</div>'
+            f'<div style="font-size: 1.5rem; font-weight: 700; color: #4f46e5; margin-top: 0.25rem;">{best_metrics["R2"]:.4f}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    with col_m2:
+        st.markdown(
+            f'<div class="kpi-container">'
+            f'<div style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Rata-Rata Margin Kesalahan (MAE)</div>'
+            f'<div style="font-size: 1.5rem; font-weight: 700; color: #10b981; margin-top: 0.25rem;">{format_rupiah_compact(best_metrics["MAE"])}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    with col_m3:
+        st.markdown(
+            f'<div class="kpi-container">'
+            f'<div style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Standar Deviasi Kesalahan (RMSE)</div>'
+            f'<div style="font-size: 1.5rem; font-weight: 700; color: #f59e0b; margin-top: 0.25rem;">{format_rupiah_compact(best_metrics["RMSE"])}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     
     st.write("---")
     st.subheader("Grafik Pengujian Backtest (Aktual vs Prediksi AI)")
@@ -885,22 +967,58 @@ with tab_data:
     comparison_df = pd.DataFrame(comparison_data).set_index("Metrik")
     st.dataframe(comparison_df, use_container_width=True)
     
-    # Show extreme outliers caught (like in the notebook: Qty > 10,000 or Value > 1B)
-    extreme_outliers = raw_stats_df[
-        (raw_stats_df["Qty"] > 10000) | (raw_stats_df["Value"] > 1000000000)
-    ]
+    # Show all data that was filtered out (Data Audit Trail)
+    st.markdown("---")
+    st.subheader("Data yang Terbuang & Dibersihkan (Data Audit Trail)")
+    st.markdown(
+        "Gunakan bagian di bawah untuk meninjau seluruh data yang dikeluarkan dari database training model. "
+        "Daftar ini mencakup baris dengan data kosong (null), baris gagal parsing, maupun baris outlier."
+    )
     
-    with st.expander(f"⚠️ Detail Outlier Ekstrem Terdeteksi ({len(extreme_outliers)} Baris)"):
-        st.markdown(
-            "Baris di bawah merupakan outlier ekstrem (misalnya error integer overflow seperti `Qty = 2,147,483,647` "
-            "atau `Value = 65,712,999,598,200`) yang telah berhasil dibersihkan dari database:"
-        )
-        if not extreme_outliers.empty:
-            outlier_disp = extreme_outliers[['Date', 'Nama Store', 'SKU', 'Qty', 'Value']].copy()
-            outlier_disp['Value'] = outlier_disp['Value'].apply(format_rupiah_compact)
-            st.dataframe(outlier_disp.set_index("Date"), use_container_width=True)
-        else:
-            st.info("Tidak ada outlier ekstrem yang terdeteksi.")
+    # Selection filter for reason
+    reason_options = [
+        "Semua Data Terbuang",
+        "Outlier saja",
+        "Data Kosong saja"
+    ]
+    selected_reason = st.selectbox(
+        "Saring Tampilan Berdasarkan Alasan Dihapus",
+        options=reason_options,
+        key="removed_reason_selectbox"
+    )
+    
+    # Filter the df_removed dataframe based on selected reason
+    df_removed_disp = df_removed.copy()
+    if selected_reason == "Outlier saja":
+        df_removed_disp = df_removed_disp[df_removed_disp["Alasan Dihapus"] == "Outlier"]
+    elif selected_reason == "Data Kosong saja":
+        df_removed_disp = df_removed_disp[df_removed_disp["Alasan Dihapus"] == "Data Kosong"]
+        
+    st.markdown(f"Total baris terfilter sesuai kriteria: **{len(df_removed_disp):,} baris**")
+    
+    if not df_removed_disp.empty:
+        # Display the dataframe with clean columns
+        disp_cols = ["Date", "Nama Store", "SKU", "Qty", "Value", "Alasan Dihapus"]
+        existing_cols = [c for c in disp_cols if c in df_removed_disp.columns]
+        df_removed_table = df_removed_disp[existing_cols].copy()
+        
+        # Safe formatting
+        if "Value" in df_removed_table.columns:
+            # Coerce to numeric, handle NaN/None values, format clean rupiah
+            num_val = pd.to_numeric(df_removed_table["Value"], errors="coerce").fillna(0)
+            df_removed_table["Value"] = num_val.apply(format_rupiah_compact)
+        if "Qty" in df_removed_table.columns:
+            num_qty = pd.to_numeric(df_removed_table["Qty"], errors="coerce").fillna(0)
+            df_removed_table["Qty"] = num_qty.apply(lambda q: f"{q:,.0f}")
+            
+        st.dataframe(df_removed_table, use_container_width=True)
+    else:
+        st.info("Tidak ada data yang terbuang untuk filter kriteria ini.")
+            
+    st.write("---")
+    st.subheader("Database Transaksi Mentah (Raw)")
+    st.markdown("Menampilkan tabel seluruh baris data transaksi asli sebelum melalui proses pembersihan atau penyaringan.")
+    st.dataframe(raw_df, use_container_width=True)
             
     st.write("---")
     st.subheader("Database Transaksi Terfilter (Cleaned)")
