@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
@@ -100,6 +102,9 @@ def make_daily_features(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .sort_values("Date")
     )
+    
+    if daily.empty:
+        return daily
 
     daily["DayNum"] = (daily["Date"] - daily["Date"].min()).dt.days
     daily["Month"] = daily["Date"].dt.month
@@ -248,52 +253,63 @@ def build_excel(future_df: pd.DataFrame, store_stats: pd.DataFrame, metrics: pd.
     return buffer.getvalue()
 
 
-def plot_cluster_scatter(store_stats: pd.DataFrame, best_k: int, explained) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(10, 5))
-    fig.patch.set_facecolor('none')
-    ax.set_facecolor('none')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_color('#cccccc')
-    ax.spines['bottom'].set_color('#cccccc')
-    ax.tick_params(colors='#888888')
+def plot_cluster_scatter_plotly(store_stats: pd.DataFrame, best_k: int, explained, cluster_profile: pd.DataFrame) -> go.Figure:
+    # Sort cluster profile by Total Value to assign business-friendly names
+    profile_sorted = cluster_profile.sort_values("Avg_TotalValue", ascending=False).reset_index()
+    cluster_names = {}
+    labels = [
+        "🏆 Klaster Emas (Toko Utama / Kinerja Tinggi)",
+        "🥈 Klaster Perak (Toko Menengah / Kinerja Sedang)",
+        "🥉 Klaster Perunggu (Toko Kecil / Potensial)"
+    ]
+    for idx, row in profile_sorted.iterrows():
+        c_id = int(row["Cluster"])
+        label = labels[idx] if idx < len(labels) else f"Klaster {c_id} (Lainnya)"
+        cluster_names[c_id] = label
+
+    store_stats_display = store_stats.copy()
+    store_stats_display["Segmen Bisnis"] = store_stats_display["Cluster"].map(cluster_names)
+    store_stats_display["Formatted Revenue"] = store_stats_display["TotalValue"].apply(format_rupiah_compact)
     
-    size_base = store_stats["TotalValue"].clip(lower=0)
+    # Determine size based on sales value
+    size_base = store_stats_display["TotalValue"].clip(lower=0)
     max_size = max(size_base.max(), 1)
-    sizes = 60 + (size_base / max_size) * 400
-
-    scatter = ax.scatter(
-        store_stats["PC1"],
-        store_stats["PC2"],
-        c=store_stats["Cluster"],
-        cmap=CLUSTER_CMAP,
-        s=sizes,
-        alpha=0.85,
-        edgecolors="white",
-        linewidth=0.6,
+    store_stats_display["BubbleSize"] = 15 + (size_base / max_size) * 45
+    
+    fig = px.scatter(
+        store_stats_display,
+        x="PC1",
+        y="PC2",
+        color="Segmen Bisnis",
+        size="BubbleSize",
+        hover_name="Nama Store",
+        hover_data={
+            "PC1": False,
+            "PC2": False,
+            "BubbleSize": False,
+            "Segmen Bisnis": True,
+            "Formatted Revenue": True,
+            "TxCount": True,
+            "UniqueSKU": True
+        },
+        labels={
+            "Formatted Revenue": "Total Penjualan",
+            "TxCount": "Jumlah Transaksi",
+            "UniqueSKU": "SKU Unik"
+        },
+        color_discrete_sequence=["#6366F1", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#8B5CF6"]
     )
-
-    for cluster_id in sorted(store_stats["Cluster"].unique()):
-        sub = store_stats[store_stats["Cluster"] == cluster_id]
-        ax.annotate(
-            f"Klaster {int(cluster_id)}",
-            (sub["PC1"].mean(), sub["PC2"].mean()),
-            ha="center",
-            fontsize=9,
-            fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85, edgecolor='#dddddd'),
-        )
-
-    ticks = sorted(store_stats["Cluster"].unique())
-    cbar = fig.colorbar(scatter, ax=ax, ticks=ticks)
-    cbar.set_label("Cluster", color='#888888')
-    cbar.ax.yaxis.set_tick_params(color='#888888', labelcolor='#888888')
-    cbar.outline.set_edgecolor('#cccccc')
-
-    ax.set_xlabel(f"PC1 ({explained[0] * 100:.1f}%)", color='#888888')
-    ax.set_ylabel(f"PC2 ({explained[1] * 100:.1f}%)", color='#888888')
-    ax.grid(True, linestyle=':', alpha=0.4, color='#888888')
-    fig.tight_layout()
+    
+    fig.update_layout(
+        xaxis_title=f"PC1 ({explained[0] * 100:.1f}%)",
+        yaxis_title=f"PC2 ({explained[1] * 100:.1f}%)",
+        margin=dict(l=0, r=0, t=10, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+    )
     return fig
 
 
@@ -510,19 +526,48 @@ with tab_overview:
     st.subheader("Tren Penjualan Aktual & Prediksi Masa Depan")
     st.write(f"Model Forecasting Terpilih: **{best_name}**")
     
-    # Merge historical and future predictions for rendering
-    chart_df = pd.DataFrame({
-        "Date": pd.concat([daily["Date"], future_df["Date"]], ignore_index=True),
-        "Penjualan Aktual": pd.concat([daily["TotalValue"], pd.Series([np.nan] * len(future_df))], ignore_index=True),
-        "Prediksi AI (30 Hari)": pd.concat([pd.Series([np.nan] * len(daily)), future_df["Predicted"]], ignore_index=True)
-    })
-    
-    # Smooth connection
+    # Plotly Interactive Chart
+    fig_overview = go.Figure()
+    fig_overview.add_trace(go.Scatter(
+        x=daily["Date"],
+        y=daily["TotalValue"],
+        mode="lines",
+        name="Penjualan Aktual",
+        line=dict(color="#4f46e5", width=2.5),
+        hovertemplate="Tanggal: %{x|%d %b %Y}<br>Penjualan: Rp %{y:,.0f}<extra></extra>"
+    ))
+    fig_overview.add_trace(go.Scatter(
+        x=future_df["Date"],
+        y=future_df["Predicted"],
+        mode="lines+markers",
+        name="Prediksi AI",
+        line=dict(color="#10b981", width=2.5, dash="dash"),
+        marker=dict(size=5),
+        hovertemplate="Tanggal: %{x|%d %b %Y}<br>Prediksi: Rp %{y:,.0f}<extra></extra>"
+    ))
+    # Connect the gap
     if len(daily) > 0:
-        chart_df.loc[len(daily) - 1, "Prediksi AI (30 Hari)"] = daily.iloc[-1]["TotalValue"]
-        
-    chart_df = chart_df.set_index("Date")
-    st.line_chart(chart_df, color=["#4f46e5", "#10b981"])
+        fig_overview.add_trace(go.Scatter(
+            x=[daily["Date"].iloc[-1], future_df["Date"].iloc[0]],
+            y=[daily["TotalValue"].iloc[-1], future_df["Predicted"].iloc[0]],
+            mode="lines",
+            showlegend=False,
+            line=dict(color="#10b981", width=2.5, dash="dash"),
+            hoverinfo="skip"
+        ))
+    
+    fig_overview.update_layout(
+        hovermode="x unified",
+        xaxis_title="Tanggal",
+        yaxis_title="Nilai Penjualan (Rp)",
+        margin=dict(l=0, r=0, t=10, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+    )
+    st.plotly_chart(fig_overview, use_container_width=True)
     
     st.write("")
     st.write("---")
@@ -584,37 +629,63 @@ with tab_lookup:
             st.warning("Tidak ada data transaksi atau prediksi pada tanggal yang dipilih.")
             
     with col_res2:
-        # Context window chart
-        st.markdown("##### Tren Penjualan Sekitar Tanggal Pencarian (± 7 Hari)")
-        start_win = lookup_datetime - pd.Timedelta(days=7)
-        end_win = lookup_datetime + pd.Timedelta(days=7)
+        # Full-year timeline chart with search date highlight
+        st.markdown("##### Tren Penjualan & Posisi Tanggal Pencarian")
         
-        win_hist = daily[(daily["Date"] >= start_win) & (daily["Date"] <= end_win)]
-        win_fore = future_df[(future_df["Date"] >= start_win) & (future_df["Date"] <= end_win)]
+        fig_win = go.Figure()
+        fig_win.add_trace(go.Scatter(
+            x=daily["Date"],
+            y=daily["TotalValue"],
+            mode="lines",
+            name="Aktual",
+            line=dict(color="#4f46e5", width=2.5),
+            hovertemplate="Tanggal: %{x|%d %b %Y}<br>Penjualan: Rp %{y:,.0f}<extra></extra>"
+        ))
         
-        if not win_hist.empty or not win_fore.empty:
-            fig_win, ax_win = plt.subplots(figsize=(8, 4))
-            fig_win.patch.set_facecolor('none')
-            ax_win.set_facecolor('none')
-            ax_win.spines['top'].set_visible(False)
-            ax_win.spines['right'].set_visible(False)
-            ax_win.spines['left'].set_color('#cccccc')
-            ax_win.spines['bottom'].set_color('#cccccc')
-            ax_win.tick_params(colors='#888888')
-            ax_win.grid(True, linestyle=':', alpha=0.5, color='#888888')
+        fig_win.add_trace(go.Scatter(
+            x=future_df["Date"],
+            y=future_df["Predicted"],
+            mode="lines+markers",
+            name="Prediksi",
+            line=dict(color="#10b981", width=2.5, dash="dash"),
+            marker=dict(size=4),
+            hovertemplate="Tanggal: %{x|%d %b %Y}<br>Prediksi: Rp %{y:,.0f}<extra></extra>"
+        ))
+        
+        # Connect the gap
+        if len(daily) > 0:
+            fig_win.add_trace(go.Scatter(
+                x=[daily["Date"].iloc[-1], future_df["Date"].iloc[0]],
+                y=[daily["TotalValue"].iloc[-1], future_df["Predicted"].iloc[0]],
+                mode="lines",
+                showlegend=False,
+                line=dict(color="#10b981", width=2.5, dash="dash"),
+                hoverinfo="skip"
+            ))
             
-            if not win_hist.empty:
-                ax_win.plot(win_hist["Date"], win_hist["TotalValue"] / 1e6, marker='o', label="Aktual", color="#4f46e5", alpha=0.8)
-            if not win_fore.empty:
-                ax_win.plot(win_fore["Date"], win_fore["Predicted"] / 1e6, marker='s', linestyle='--', label="Prediksi", color="#10b981", alpha=0.8)
-                
-            ax_win.axvline(lookup_datetime, color='#ef4444', linestyle=':', label=f"Tanggal Cari ({lookup_date.strftime('%d-%b')})", lw=2)
-            ax_win.set_ylabel("Nilai Penjualan (Juta Rp)", color='#888888')
-            ax_win.legend(loc="upper left")
-            plt.tight_layout()
-            st.pyplot(fig_win)
-        else:
-            st.info("Data tidak cukup untuk menampilkan tren sekitar tanggal terpilih.")
+        # Highlight search date
+        max_y = max(daily["TotalValue"].max(), future_df["Predicted"].max())
+        fig_win.add_shape(
+            type="line",
+            x0=lookup_datetime,
+            y0=0,
+            x1=lookup_datetime,
+            y1=max_y * 1.05 if max_y > 0 else 100,
+            line=dict(color="#ef4444", width=2, dash="dot"),
+        )
+        
+        fig_win.update_layout(
+            hovermode="x unified",
+            xaxis_title="Tanggal",
+            yaxis_title="Nilai Penjualan (Rp)",
+            margin=dict(l=0, r=0, t=10, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)"),
+            yaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+        )
+        st.plotly_chart(fig_win, use_container_width=True)
             
     st.write("---")
     st.subheader("Data Hasil Forecast Lengkap (30 Hari)")
@@ -671,7 +742,8 @@ with tab_cluster:
         "Toko dengan performa operasional yang mirip akan mengelompok bersama."
     )
     if best_k > 1:
-        st.pyplot(plot_cluster_scatter(store_stats, best_k, explained))
+        fig_pca_plotly = plot_cluster_scatter_plotly(store_stats, best_k, explained, cluster_profile)
+        st.plotly_chart(fig_pca_plotly, use_container_width=True)
         
     if sil_scores:
         st.write("---")
@@ -711,24 +783,127 @@ with tab_model:
     st.dataframe(disp_metrics.set_index("Algoritma Model AI"), use_container_width=True)
     
     st.write("---")
-    st.subheader("Perbandingan Akurasi Akurasi (R2 Score)")
+    st.subheader("Perbandingan Akurasi (R2 Score)")
     st.markdown(
         "R2 Score mengukur seberapa baik model dapat menjelaskan variasi pola data. Nilai mendekati 1.000 menunjukkan akurasi yang tinggi."
     )
-    r2_df = metrics[["Model", "R2"]].set_index("Model")
-    st.bar_chart(r2_df, color="#4f46e5")
+    fig_r2 = px.bar(
+        metrics,
+        x="Model",
+        y="R2",
+        color="Model",
+        text_auto=".3f",
+        labels={"R2": "R2 Score", "Model": "Algoritma"},
+        color_discrete_sequence=["#4f46e5", "#10b981", "#f59e0b"]
+    )
+    fig_r2.update_layout(
+        margin=dict(l=0, r=0, t=10, b=0),
+        showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+    )
+    st.plotly_chart(fig_r2, use_container_width=True)
     
     st.write("---")
     st.subheader("Grafik Pengujian Backtest (Aktual vs Prediksi AI)")
     st.markdown(
         "Memvisualisasikan kemampuan model terpilih (**%s**) dalam merekonstruksi data aktual selama masa uji backtest." % best_name
     )
-    backtest_chart = backtest[["Date", "Aktual", best_name]].set_index("Date")
-    st.line_chart(backtest_chart, color=["#4f46e5", "#10b981"])
+    
+    fig_backtest = go.Figure()
+    fig_backtest.add_trace(go.Scatter(
+        x=backtest["Date"],
+        y=backtest["Aktual"],
+        mode="lines",
+        name="Aktual",
+        line=dict(color="#4f46e5", width=2.5),
+        hovertemplate="Tanggal: %{x|%d %b %Y}<br>Aktual: Rp %{y:,.0f}<extra></extra>"
+    ))
+    fig_backtest.add_trace(go.Scatter(
+        x=backtest["Date"],
+        y=backtest[best_name],
+        mode="lines",
+        name=f"Prediksi AI ({best_name})",
+        line=dict(color="#10b981", width=2.5, dash="dash"),
+        hovertemplate="Tanggal: %{x|%d %b %Y}<br>Prediksi: Rp %{y:,.0f}<extra></extra>"
+    ))
+    fig_backtest.update_layout(
+        hovermode="x unified",
+        xaxis_title="Tanggal",
+        yaxis_title="Nilai Penjualan (Rp)",
+        margin=dict(l=0, r=0, t=10, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+    )
+    st.plotly_chart(fig_backtest, use_container_width=True)
 
 # Tab 5: Data Explorer
 with tab_data:
-    st.subheader("Database Transaksi (Filtered)")
+    st.subheader("Analisis Pembersihan Data (Before vs After Cleaning)")
+    st.markdown(
+        "Alur pembersihan data ini diadaptasi dari notebook `sales_prediction_bogor.ipynb`. "
+        "AI melakukan konversi tipe data, menghapus baris dengan nilai kosong (null), "
+        "dan menyaring outlier ekstrem (seperti kesalahan input nilai kuantitas/harga berlebih)."
+    )
+    
+    # Calculate raw statistics
+    raw_stats_df = raw_df.copy()
+    raw_stats_df["Value"] = pd.to_numeric(raw_stats_df["Value"], errors="coerce")
+    raw_stats_df["Qty"] = pd.to_numeric(raw_stats_df["Qty"], errors="coerce")
+    
+    raw_rows = len(raw_df)
+    raw_total_val = raw_stats_df["Value"].sum()
+    raw_total_qty = raw_stats_df["Qty"].sum()
+    
+    cleaned_rows = len(df)
+    cleaned_total_val = df["Value"].sum()
+    cleaned_total_qty = df["Qty"].sum()
+    
+    comparison_data = {
+        "Metrik": ["Jumlah Baris (Rows)", "Total Nilai Penjualan (Value)", "Total Kuantitas (Qty)"],
+        "Sebelum Pembersihan (Raw)": [
+            f"{raw_rows:,}",
+            format_rupiah_compact(raw_total_val),
+            f"{raw_total_qty:,.0f}"
+        ],
+        "Setelah Pembersihan (Cleaned)": [
+            f"{cleaned_rows:,}",
+            format_rupiah_compact(cleaned_total_val),
+            f"{cleaned_total_qty:,.0f}"
+        ],
+        "Selisih / Terbuang (Outliers/Null)": [
+            f"{raw_rows - cleaned_rows:,}",
+            format_rupiah_compact(raw_total_val - cleaned_total_val),
+            f"{raw_total_qty - cleaned_total_qty:,.0f}"
+        ]
+    }
+    comparison_df = pd.DataFrame(comparison_data).set_index("Metrik")
+    st.dataframe(comparison_df, use_container_width=True)
+    
+    # Show extreme outliers caught (like in the notebook: Qty > 10,000 or Value > 1B)
+    extreme_outliers = raw_stats_df[
+        (raw_stats_df["Qty"] > 10000) | (raw_stats_df["Value"] > 1000000000)
+    ]
+    
+    with st.expander(f"⚠️ Detail Outlier Ekstrem Terdeteksi ({len(extreme_outliers)} Baris)"):
+        st.markdown(
+            "Baris di bawah merupakan outlier ekstrem (misalnya error integer overflow seperti `Qty = 2,147,483,647` "
+            "atau `Value = 65,712,999,598,200`) yang telah berhasil dibersihkan dari database:"
+        )
+        if not extreme_outliers.empty:
+            outlier_disp = extreme_outliers[['Date', 'Nama Store', 'SKU', 'Qty', 'Value']].copy()
+            outlier_disp['Value'] = outlier_disp['Value'].apply(format_rupiah_compact)
+            st.dataframe(outlier_disp.set_index("Date"), use_container_width=True)
+        else:
+            st.info("Tidak ada outlier ekstrem yang terdeteksi.")
+            
+    st.write("---")
+    st.subheader("Database Transaksi Terfilter (Cleaned)")
     st.markdown("Menampilkan tabel data transaksi yang telah dibersihkan dan disaring berdasarkan parameter pencarian.")
     st.dataframe(df_filtered, use_container_width=True)
     
